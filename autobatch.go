@@ -186,6 +186,17 @@ func (bs *Blockstore) flushWriteLog() {
 			log.Errorf("failed to delete block %s from write ahead log: %s", blk.Cid(), err)
 		}
 	}
+
+	if gcer, ok := bs.writeLog.(bstoreGCer); ok {
+		log.Infof("running gc on write log")
+		if err := gcer.CollectGarbage(); err != nil {
+			log.Errorf("failed to run garbage collection on write log: %s", err)
+		}
+	}
+}
+
+type bstoreGCer interface {
+	CollectGarbage() error
 }
 
 // PutMany puts a slice of blocks at the same time using batching
