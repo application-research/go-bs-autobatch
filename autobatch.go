@@ -61,6 +61,7 @@ func (bs *Blockstore) recoverWriteLog() error {
 
 		bs.buffer[c] = blk
 	}
+	log.Infof("recovered %d entries from the write log", len(bs.buffer))
 
 	return nil
 }
@@ -159,6 +160,8 @@ func (bs *Blockstore) flushWriteLog() {
 	buf := bs.buffer
 	bs.buffer = make(map[cid.Cid]blocks.Block)
 	bs.lk.Unlock()
+
+	log.Infof("flushing write log (%d blocks)", len(buf))
 
 	blks := make([]blocks.Block, 0, len(buf))
 	for _, blk := range buf {
