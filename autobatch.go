@@ -3,6 +3,7 @@ package autobatch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	blocks "github.com/ipfs/go-block-format"
@@ -161,7 +162,7 @@ func (bs *Blockstore) flushWriteLog() {
 	bs.buffer = make(map[cid.Cid]blocks.Block)
 	bs.lk.Unlock()
 
-	log.Infof("flushing write log (%d blocks)", len(buf))
+	log.Debugf("flushing write log (%d blocks)", len(buf))
 
 	blks := make([]blocks.Block, 0, len(buf))
 	for _, blk := range buf {
@@ -191,9 +192,12 @@ func (bs *Blockstore) flushWriteLog() {
 	}
 
 	if gcer, ok := bs.writeLog.(bstoreGCer); ok {
-		log.Infof("running gc on write log")
+		log.Debugf("running gc on write log")
 		if err := gcer.CollectGarbage(); err != nil {
-			log.Errorf("failed to run garbage collection on write log: %s", err)
+			// hacky way to avoid a dependency on badger for a specific error check so i can have less noisy logs
+			if !strings.Contains(err.Error(), "request rejected") {
+				log.Warningf("failed to run garbage collection on write log: %s", err)
+			}
 		}
 	}
 }
