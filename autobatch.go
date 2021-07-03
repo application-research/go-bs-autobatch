@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	blocks "github.com/ipfs/go-block-format"
@@ -27,6 +28,41 @@ type Blockstore struct {
 	// putting in the write ahead log, and write directly and sychronously to
 	// the child blockstore
 	putManySyncThreshold int
+}
+
+func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit int) (blockstore.Blockstore, error) {
+	bs := &Blockstore{
+		child:    child,
+		writeLog: writelog,
+		buffer:   make(map[cid.Cid]blocks.Block),
+
+		bufferLimit:          bufferlimit,
+		putManySyncThreshold: 20,
+	}
+
+	if err := bs.recoverWriteLog(); err != nil {
+		return nil, err
+	}
+
+	return bs, nil
+}
+
+func (bs *Blockstore) recoverWriteLog() error {
+	ch, err := bs.writeLog.AllKeysChan(context.TODO())
+	if err != nil {
+		return err
+	}
+
+	for c := range ch {
+		blk, err := bs.writeLog.Get(c)
+		if err != nil {
+			return fmt.Errorf("write log appears to be corrupt, read of advertised content failed: %s", err)
+		}
+
+		bs.buffer[c] = blk
+	}
+
+	return nil
 }
 
 func (bs *Blockstore) DeleteBlock(c cid.Cid) error {
@@ -211,4 +247,24 @@ func (bs *Blockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid, error) {
 // rehashed to make sure it matches its CID.
 func (bs *Blockstore) HashOnRead(enabled bool) {
 	bs.child.HashOnRead(enabled)
+}
+
+func (bs *Blockstore) View(c cid.Cid, f func([]byte) error) error {
+	bs.lk.Lock()
+	blk, ok := bs.buffer[c]
+	bs.lk.Unlock()
+	if ok {
+		return f(blk.RawData())
+	}
+
+	if cview, ok := bs.child.(blockstore.Viewer); ok {
+		return cview.View(c, f)
+	}
+
+	blk, err := bs.child.Get(c)
+	if err != nil {
+		return err
+	}
+
+	return f(blk.RawData())
 }
