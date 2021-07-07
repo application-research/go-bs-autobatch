@@ -75,6 +75,30 @@ func (bs *Blockstore) DeleteBlock(c cid.Cid) error {
 	return bs.child.DeleteBlock(c)
 }
 
+type batchDeleter interface {
+	DeleteMany([]cid.Cid) error
+}
+
+func (bs *Blockstore) DeleteMany(cids []cid.Cid) error {
+	for _, c := range cids {
+		if err := bs.writeLogClear(c); err != nil {
+			return err
+		}
+	}
+
+	if dm, ok := bs.child.(batchDeleter); ok {
+		return dm.DeleteMany(cids)
+	}
+
+	for _, c := range cids {
+		if err := bs.child.DeleteBlock(c); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (bs *Blockstore) writeLogClear(c cid.Cid) error {
 	bs.lk.Lock()
 	_, ok := bs.buffer[c]
