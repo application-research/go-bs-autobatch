@@ -31,7 +31,7 @@ type Blockstore struct {
 	putManySyncThreshold int
 }
 
-func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit int) (blockstore.Blockstore, error) {
+func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit int) (*Blockstore, error) {
 	bs := &Blockstore{
 		child:    child,
 		writeLog: writelog,
