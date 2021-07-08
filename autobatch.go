@@ -31,14 +31,14 @@ type Blockstore struct {
 	putManySyncThreshold int
 }
 
-func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit int) (*Blockstore, error) {
+func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit, putmanythreshold int) (*Blockstore, error) {
 	bs := &Blockstore{
 		child:    child,
 		writeLog: writelog,
 		buffer:   make(map[cid.Cid]blocks.Block),
 
 		bufferLimit:          bufferlimit,
-		putManySyncThreshold: 20,
+		putManySyncThreshold: putmanythreshold,
 	}
 
 	if err := bs.recoverWriteLog(); err != nil {
