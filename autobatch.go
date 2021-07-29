@@ -10,6 +10,7 @@ import (
 	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	logging "github.com/ipfs/go-log"
+	"golang.org/x/xerrors"
 )
 
 var log = logging.Logger("bs-wal")
@@ -132,7 +133,15 @@ func (bs *Blockstore) Has(c cid.Cid) (bool, error) {
 		return true, nil
 	}
 
-	return bs.child.Has(c)
+	has, err := bs.child.Has(c)
+	if err != nil {
+		return false, err
+	}
+
+	if !has {
+		return bs.writeLog.Has(c)
+	}
+	return has, nil
 }
 
 func (bs *Blockstore) Get(c cid.Cid) (blocks.Block, error) {
@@ -143,7 +152,16 @@ func (bs *Blockstore) Get(c cid.Cid) (blocks.Block, error) {
 		return blk, nil
 	}
 
-	return bs.child.Get(c)
+	blk, err := bs.child.Get(c)
+	switch {
+	case err == nil:
+		return blk, nil
+	default:
+		return nil, err
+	case xerrors.Is(err, blockstore.ErrNotFound):
+		// This is a weird edgecase that really should be fixed some other way
+		return bs.writeLog.Get(c)
+	}
 }
 
 // GetSize returns the CIDs mapped BlockSize
@@ -155,7 +173,16 @@ func (bs *Blockstore) GetSize(c cid.Cid) (int, error) {
 		return len(blk.RawData()), nil
 	}
 
-	return bs.child.GetSize(c)
+	s, err := bs.child.GetSize(c)
+	switch {
+	case err == nil:
+		return s, nil
+	default:
+		return 0, err
+	case xerrors.Is(err, blockstore.ErrNotFound):
+		// This is a weird edgecase that really should be fixed some other way
+		return bs.writeLog.GetSize(c)
+	}
 }
 
 // Put puts a given block to the underlying datastore
@@ -300,10 +327,18 @@ func (bs *Blockstore) View(c cid.Cid, f func([]byte) error) error {
 	}
 
 	if cview, ok := bs.child.(blockstore.Viewer); ok {
-		return cview.View(c, f)
+		err := cview.View(c, f)
+		if err == nil {
+			return nil
+		}
+		if !xerrors.Is(err, blockstore.ErrNotFound) {
+			return err
+		}
+		// explicitly fall through to backup logic...
 	}
 
-	blk, err := bs.child.Get(c)
+	// reusing the Get method here to reuse the error handling logic from there
+	blk, err := bs.Get(c)
 	if err != nil {
 		return err
 	}
