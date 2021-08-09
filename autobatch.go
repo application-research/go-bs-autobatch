@@ -2,7 +2,6 @@ package autobatch
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 
@@ -19,7 +18,7 @@ type Blockstore struct {
 	child blockstore.Blockstore
 
 	writeLog blockstore.Blockstore
-	buffer   map[cid.Cid]blocks.Block
+	buffer   map[cid.Cid]struct{}
 	lk       sync.Mutex
 
 	// number of items we buffer in the writeAheadLog before we flush them to
@@ -36,7 +35,7 @@ func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit, putmanyth
 	bs := &Blockstore{
 		child:    child,
 		writeLog: writelog,
-		buffer:   make(map[cid.Cid]blocks.Block),
+		buffer:   make(map[cid.Cid]struct{}),
 
 		bufferLimit:          bufferlimit,
 		putManySyncThreshold: putmanythreshold,
@@ -55,15 +54,14 @@ func (bs *Blockstore) recoverWriteLog() error {
 		return err
 	}
 
-	for c := range ch {
-		blk, err := bs.writeLog.Get(c)
-		if err != nil {
-			return fmt.Errorf("write log appears to be corrupt, read of advertised content failed: %s", err)
+	go func() {
+		var count int
+		for c := range ch {
+			bs.addToBuffer(c)
+			count++
 		}
-
-		bs.buffer[c] = blk
-	}
-	log.Infof("recovered %d entries from the write log", len(bs.buffer))
+		log.Infof("recovered %d entries from the write log", count)
+	}()
 
 	return nil
 }
@@ -146,10 +144,11 @@ func (bs *Blockstore) Has(c cid.Cid) (bool, error) {
 
 func (bs *Blockstore) Get(c cid.Cid) (blocks.Block, error) {
 	bs.lk.Lock()
-	blk, ok := bs.buffer[c]
+	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
 	if ok {
-		return blk, nil
+		// TODO: technically a race condition here...
+		return bs.writeLog.Get(c)
 	}
 
 	blk, err := bs.child.Get(c)
@@ -167,10 +166,11 @@ func (bs *Blockstore) Get(c cid.Cid) (blocks.Block, error) {
 // GetSize returns the CIDs mapped BlockSize
 func (bs *Blockstore) GetSize(c cid.Cid) (int, error) {
 	bs.lk.Lock()
-	blk, ok := bs.buffer[c]
+	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
 	if ok {
-		return len(blk.RawData()), nil
+		// TODO: technically a race condition here too
+		return bs.writeLog.GetSize(c)
 	}
 
 	s, err := bs.child.GetSize(c)
@@ -190,18 +190,17 @@ func (bs *Blockstore) Put(blk blocks.Block) error {
 	if err := bs.writeLog.Put(blk); err != nil {
 		return err
 	}
-	bs.addToBuffer([]blocks.Block{blk})
+	bs.addToBuffer(blk.Cid())
 
 	return nil
 }
 
-func (bs *Blockstore) addToBuffer(blks []blocks.Block) {
+func (bs *Blockstore) addToBuffer(c cid.Cid) {
 	bs.lk.Lock()
 	defer bs.lk.Unlock()
 
-	for _, blk := range blks {
-		bs.buffer[blk.Cid()] = blk
-	}
+	bs.buffer[c] = struct{}{}
+
 	if len(bs.buffer) >= bs.bufferLimit {
 		go bs.flushWriteLog()
 	}
@@ -210,13 +209,18 @@ func (bs *Blockstore) addToBuffer(blks []blocks.Block) {
 func (bs *Blockstore) flushWriteLog() {
 	bs.lk.Lock()
 	buf := bs.buffer
-	bs.buffer = make(map[cid.Cid]blocks.Block)
+	bs.buffer = make(map[cid.Cid]struct{})
 	bs.lk.Unlock()
 
 	log.Debugf("flushing write log (%d blocks)", len(buf))
 
 	blks := make([]blocks.Block, 0, len(buf))
-	for _, blk := range buf {
+	for c := range buf {
+		blk, err := bs.writeLog.Get(c)
+		if err != nil {
+			log.Errorf("failed to get expected block from write log: %s", err)
+			continue
+		}
 		blks = append(blks, blk)
 	}
 
@@ -228,7 +232,7 @@ func (bs *Blockstore) flushWriteLog() {
 
 		bs.lk.Lock()
 		for _, blk := range blks {
-			bs.buffer[blk.Cid()] = blk
+			bs.buffer[blk.Cid()] = struct{}{}
 		}
 		bs.lk.Unlock()
 		log.Errorf("failed to flush write log (%d entries) to underlying datastore: %s", len(buf), err)
@@ -268,7 +272,9 @@ func (bs *Blockstore) PutMany(blks []blocks.Block) error {
 		return err
 	}
 
-	bs.addToBuffer(blks)
+	for _, blk := range blks {
+		bs.addToBuffer(blk.Cid())
+	}
 	return nil
 }
 
@@ -320,24 +326,28 @@ func (bs *Blockstore) HashOnRead(enabled bool) {
 
 func (bs *Blockstore) View(c cid.Cid, f func([]byte) error) error {
 	bs.lk.Lock()
-	blk, ok := bs.buffer[c]
+	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
 	if ok {
-		return f(blk.RawData())
+		return maybeView(bs.writeLog, c, f)
 	}
 
-	if cview, ok := bs.child.(blockstore.Viewer); ok {
-		err := cview.View(c, f)
-		if err == nil {
-			return nil
-		}
-		if !xerrors.Is(err, blockstore.ErrNotFound) {
-			return err
-		}
-		// explicitly fall through to backup logic...
+	err := maybeView(bs.child, c, f)
+	if err == nil {
+		return nil
+	}
+	if !xerrors.Is(err, blockstore.ErrNotFound) {
+		return err
 	}
 
-	// reusing the Get method here to reuse the error handling logic from there
+	return maybeView(bs.writeLog, c, f)
+}
+
+func maybeView(bs blockstore.Blockstore, c cid.Cid, f func([]byte) error) error {
+	if cview, ok := bs.(blockstore.Viewer); ok {
+		return cview.View(c, f)
+	}
+
 	blk, err := bs.Get(c)
 	if err != nil {
 		return err
