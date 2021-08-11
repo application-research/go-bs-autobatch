@@ -31,7 +31,7 @@ type Blockstore struct {
 	putManySyncThreshold int
 }
 
-func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit, putmanythreshold int) (*Blockstore, error) {
+func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit, putmanythreshold int, norecover bool) (*Blockstore, error) {
 	bs := &Blockstore{
 		child:    child,
 		writeLog: writelog,
@@ -41,8 +41,10 @@ func NewBlockstore(child, writelog blockstore.Blockstore, bufferlimit, putmanyth
 		putManySyncThreshold: putmanythreshold,
 	}
 
-	if err := bs.recoverWriteLog(); err != nil {
-		return nil, err
+	if !norecover {
+		if err := bs.recoverWriteLog(); err != nil {
+			return nil, err
+		}
 	}
 
 	return bs, nil
@@ -64,6 +66,60 @@ func (bs *Blockstore) recoverWriteLog() error {
 	}()
 
 	return nil
+}
+
+func (bs *Blockstore) Flush() error {
+	ch, err := bs.writeLog.AllKeysChan(context.TODO())
+	if err != nil {
+		return err
+	}
+
+	var count int
+	for c := range ch {
+		count++
+		blk, err := bs.writeLog.Get(c)
+		if err != nil {
+			log.Errorf("failed to get expected block from write log: %s", err)
+			continue
+		}
+
+		if err := bs.child.Put(blk); err != nil {
+			log.Errorf("failed to write block to child datastore: %s", err)
+			continue
+		}
+
+		if err := bs.writeLog.DeleteBlock(blk.Cid()); err != nil {
+			log.Errorf("failed to delete block: %s", err)
+			continue
+		}
+		log.Infof("flush progress: %d", count)
+
+		if count%100 == 99 {
+			if gcer, ok := bs.writeLog.(bstoreGCer); ok {
+				log.Debugf("running gc on write log")
+				if err := gcer.CollectGarbage(); err != nil {
+					// hacky way to avoid a dependency on badger for a specific error check so i can have less noisy logs
+					if !strings.Contains(err.Error(), "request rejected") {
+						log.Warningf("failed to run garbage collection on write log: %s", err)
+					}
+				}
+			}
+		}
+	}
+	log.Infof("flushed %d entries from the write log", count)
+
+	if gcer, ok := bs.writeLog.(bstoreGCer); ok {
+		log.Debugf("running gc on write log")
+		if err := gcer.CollectGarbage(); err != nil {
+			// hacky way to avoid a dependency on badger for a specific error check so i can have less noisy logs
+			if !strings.Contains(err.Error(), "request rejected") {
+				log.Warningf("failed to run garbage collection on write log: %s", err)
+			}
+		}
+	}
+
+	return nil
+
 }
 
 func (bs *Blockstore) DeleteBlock(c cid.Cid) error {

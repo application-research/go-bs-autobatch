@@ -24,7 +24,7 @@ func TestBasicAutobatching(t *testing.T) {
 	cold := blockstore.NewBlockstore(datastore.NewMapDatastore())
 	wal := blockstore.NewBlockstore(datastore.NewMapDatastore())
 
-	ab, err := NewBlockstore(cold, wal, 100, 100)
+	ab, err := NewBlockstore(cold, wal, 100, 100, false)
 	if err != nil {
 		t.Fatal(err)
 	}
