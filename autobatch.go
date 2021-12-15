@@ -68,8 +68,8 @@ func (bs *Blockstore) recoverWriteLog() error {
 	return nil
 }
 
-func (bs *Blockstore) Flush() error {
-	ch, err := bs.writeLog.AllKeysChan(context.TODO())
+func (bs *Blockstore) Flush(ctx context.Context) error {
+	ch, err := bs.writeLog.AllKeysChan(ctx)
 	if err != nil {
 		return err
 	}
@@ -77,18 +77,18 @@ func (bs *Blockstore) Flush() error {
 	var count int
 	for c := range ch {
 		count++
-		blk, err := bs.writeLog.Get(c)
+		blk, err := bs.writeLog.Get(ctx, c)
 		if err != nil {
 			log.Errorf("failed to get expected block from write log: %s", err)
 			continue
 		}
 
-		if err := bs.child.Put(blk); err != nil {
+		if err := bs.child.Put(ctx, blk); err != nil {
 			log.Errorf("failed to write block to child datastore: %s", err)
 			continue
 		}
 
-		if err := bs.writeLog.DeleteBlock(blk.Cid()); err != nil {
+		if err := bs.writeLog.DeleteBlock(ctx, blk.Cid()); err != nil {
 			log.Errorf("failed to delete block: %s", err)
 			continue
 		}
@@ -122,31 +122,31 @@ func (bs *Blockstore) Flush() error {
 
 }
 
-func (bs *Blockstore) DeleteBlock(c cid.Cid) error {
-	if err := bs.writeLogClear(c); err != nil {
+func (bs *Blockstore) DeleteBlock(ctx context.Context, c cid.Cid) error {
+	if err := bs.writeLogClear(ctx, c); err != nil {
 		return err
 	}
 
-	return bs.child.DeleteBlock(c)
+	return bs.child.DeleteBlock(ctx, c)
 }
 
 type batchDeleter interface {
-	DeleteMany([]cid.Cid) error
+	DeleteMany(context.Context, []cid.Cid) error
 }
 
-func (bs *Blockstore) DeleteMany(cids []cid.Cid) error {
+func (bs *Blockstore) DeleteMany(ctx context.Context, cids []cid.Cid) error {
 	for _, c := range cids {
-		if err := bs.writeLogClear(c); err != nil {
+		if err := bs.writeLogClear(ctx, c); err != nil {
 			return err
 		}
 	}
 
 	if dm, ok := bs.child.(batchDeleter); ok {
-		return dm.DeleteMany(cids)
+		return dm.DeleteMany(ctx, cids)
 	}
 
 	for _, c := range cids {
-		if err := bs.child.DeleteBlock(c); err != nil {
+		if err := bs.child.DeleteBlock(ctx, c); err != nil {
 			return err
 		}
 	}
@@ -154,7 +154,7 @@ func (bs *Blockstore) DeleteMany(cids []cid.Cid) error {
 	return nil
 }
 
-func (bs *Blockstore) writeLogClear(c cid.Cid) error {
+func (bs *Blockstore) writeLogClear(ctx context.Context, c cid.Cid) error {
 	bs.lk.Lock()
 	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
@@ -170,7 +170,7 @@ func (bs *Blockstore) writeLogClear(c cid.Cid) error {
 		return nil
 	}
 
-	if err := bs.writeLog.DeleteBlock(c); err != nil {
+	if err := bs.writeLog.DeleteBlock(ctx, c); err != nil {
 		return err
 	}
 
@@ -179,7 +179,7 @@ func (bs *Blockstore) writeLogClear(c cid.Cid) error {
 	return nil
 }
 
-func (bs *Blockstore) Has(c cid.Cid) (bool, error) {
+func (bs *Blockstore) Has(ctx context.Context, c cid.Cid) (bool, error) {
 	bs.lk.Lock()
 	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
@@ -187,27 +187,27 @@ func (bs *Blockstore) Has(c cid.Cid) (bool, error) {
 		return true, nil
 	}
 
-	has, err := bs.child.Has(c)
+	has, err := bs.child.Has(ctx, c)
 	if err != nil {
 		return false, err
 	}
 
 	if !has {
-		return bs.writeLog.Has(c)
+		return bs.writeLog.Has(ctx, c)
 	}
 	return has, nil
 }
 
-func (bs *Blockstore) Get(c cid.Cid) (blocks.Block, error) {
+func (bs *Blockstore) Get(ctx context.Context, c cid.Cid) (blocks.Block, error) {
 	bs.lk.Lock()
 	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
 	if ok {
 		// TODO: technically a race condition here...
-		return bs.writeLog.Get(c)
+		return bs.writeLog.Get(ctx, c)
 	}
 
-	blk, err := bs.child.Get(c)
+	blk, err := bs.child.Get(ctx, c)
 	switch {
 	case err == nil:
 		return blk, nil
@@ -215,21 +215,21 @@ func (bs *Blockstore) Get(c cid.Cid) (blocks.Block, error) {
 		return nil, err
 	case xerrors.Is(err, blockstore.ErrNotFound):
 		// This is a weird edgecase that really should be fixed some other way
-		return bs.writeLog.Get(c)
+		return bs.writeLog.Get(ctx, c)
 	}
 }
 
 // GetSize returns the CIDs mapped BlockSize
-func (bs *Blockstore) GetSize(c cid.Cid) (int, error) {
+func (bs *Blockstore) GetSize(ctx context.Context, c cid.Cid) (int, error) {
 	bs.lk.Lock()
 	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
 	if ok {
 		// TODO: technically a race condition here too
-		return bs.writeLog.GetSize(c)
+		return bs.writeLog.GetSize(ctx, c)
 	}
 
-	s, err := bs.child.GetSize(c)
+	s, err := bs.child.GetSize(ctx, c)
 	switch {
 	case err == nil:
 		return s, nil
@@ -237,13 +237,13 @@ func (bs *Blockstore) GetSize(c cid.Cid) (int, error) {
 		return 0, err
 	case xerrors.Is(err, blockstore.ErrNotFound):
 		// This is a weird edgecase that really should be fixed some other way
-		return bs.writeLog.GetSize(c)
+		return bs.writeLog.GetSize(ctx, c)
 	}
 }
 
 // Put puts a given block to the underlying datastore
-func (bs *Blockstore) Put(blk blocks.Block) error {
-	if err := bs.writeLog.Put(blk); err != nil {
+func (bs *Blockstore) Put(ctx context.Context, blk blocks.Block) error {
+	if err := bs.writeLog.Put(ctx, blk); err != nil {
 		return err
 	}
 	bs.addToBuffer(blk.Cid())
@@ -258,11 +258,11 @@ func (bs *Blockstore) addToBuffer(c cid.Cid) {
 	bs.buffer[c] = struct{}{}
 
 	if len(bs.buffer) >= bs.bufferLimit {
-		go bs.flushWriteLog()
+		go bs.flushWriteLog(context.Background())
 	}
 }
 
-func (bs *Blockstore) flushWriteLog() {
+func (bs *Blockstore) flushWriteLog(ctx context.Context) {
 	bs.lk.Lock()
 	buf := bs.buffer
 	bs.buffer = make(map[cid.Cid]struct{})
@@ -272,7 +272,7 @@ func (bs *Blockstore) flushWriteLog() {
 
 	blks := make([]blocks.Block, 0, len(buf))
 	for c := range buf {
-		blk, err := bs.writeLog.Get(c)
+		blk, err := bs.writeLog.Get(ctx, c)
 		if err != nil {
 			log.Errorf("failed to get expected block from write log: %s", err)
 			continue
@@ -280,7 +280,7 @@ func (bs *Blockstore) flushWriteLog() {
 		blks = append(blks, blk)
 	}
 
-	if err := bs.child.PutMany(blks); err != nil {
+	if err := bs.child.PutMany(ctx, blks); err != nil {
 		// very annoying case to handle, for now, just put buffered entries
 		// back in the main buffer.  this will trigger another flush attempt on
 		// the next write, and that might have bad consequences, but not yet
@@ -297,7 +297,7 @@ func (bs *Blockstore) flushWriteLog() {
 
 	// now clear properly persisted entries out of the write ahead log
 	for _, blk := range blks {
-		if err := bs.writeLog.DeleteBlock(blk.Cid()); err != nil {
+		if err := bs.writeLog.DeleteBlock(ctx, blk.Cid()); err != nil {
 			log.Errorf("failed to delete block %s from write ahead log: %s", blk.Cid(), err)
 		}
 	}
@@ -319,12 +319,12 @@ type bstoreGCer interface {
 
 // PutMany puts a slice of blocks at the same time using batching
 // capabilities of the underlying datastore whenever possible.
-func (bs *Blockstore) PutMany(blks []blocks.Block) error {
+func (bs *Blockstore) PutMany(ctx context.Context, blks []blocks.Block) error {
 	if len(blks) > bs.putManySyncThreshold {
-		return bs.child.PutMany(blks)
+		return bs.child.PutMany(ctx, blks)
 	}
 
-	if err := bs.writeLog.PutMany(blks); err != nil {
+	if err := bs.writeLog.PutMany(ctx, blks); err != nil {
 		return err
 	}
 
@@ -380,15 +380,15 @@ func (bs *Blockstore) HashOnRead(enabled bool) {
 	bs.child.HashOnRead(enabled)
 }
 
-func (bs *Blockstore) View(c cid.Cid, f func([]byte) error) error {
+func (bs *Blockstore) View(ctx context.Context, c cid.Cid, f func([]byte) error) error {
 	bs.lk.Lock()
 	_, ok := bs.buffer[c]
 	bs.lk.Unlock()
 	if ok {
-		return maybeView(bs.writeLog, c, f)
+		return maybeView(ctx, bs.writeLog, c, f)
 	}
 
-	err := maybeView(bs.child, c, f)
+	err := maybeView(ctx, bs.child, c, f)
 	if err == nil {
 		return nil
 	}
@@ -396,15 +396,15 @@ func (bs *Blockstore) View(c cid.Cid, f func([]byte) error) error {
 		return err
 	}
 
-	return maybeView(bs.writeLog, c, f)
+	return maybeView(ctx, bs.writeLog, c, f)
 }
 
-func maybeView(bs blockstore.Blockstore, c cid.Cid, f func([]byte) error) error {
+func maybeView(ctx context.Context, bs blockstore.Blockstore, c cid.Cid, f func([]byte) error) error {
 	if cview, ok := bs.(blockstore.Viewer); ok {
-		return cview.View(c, f)
+		return cview.View(ctx, c, f)
 	}
 
-	blk, err := bs.Get(c)
+	blk, err := bs.Get(ctx, c)
 	if err != nil {
 		return err
 	}

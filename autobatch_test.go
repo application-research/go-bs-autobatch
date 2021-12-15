@@ -1,6 +1,7 @@
 package autobatch
 
 import (
+	"context"
 	"math/rand"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ func randBlock() blocks.Block {
 }
 
 func TestBasicAutobatching(t *testing.T) {
+	ctx := context.TODO()
 	cold := blockstore.NewBlockstore(datastore.NewMapDatastore())
 	wal := blockstore.NewBlockstore(datastore.NewMapDatastore())
 
@@ -30,11 +32,11 @@ func TestBasicAutobatching(t *testing.T) {
 	}
 
 	blk1 := randBlock()
-	if err := ab.PutMany([]blocks.Block{blk1}); err != nil {
+	if err := ab.PutMany(ctx, []blocks.Block{blk1}); err != nil {
 		t.Fatal(err)
 	}
 
-	has, err := ab.Has(blk1.Cid())
+	has, err := ab.Has(ctx, blk1.Cid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +44,7 @@ func TestBasicAutobatching(t *testing.T) {
 		t.Fatal("should have")
 	}
 
-	_, err = ab.Get(blk1.Cid())
+	_, err = ab.Get(ctx, blk1.Cid())
 	if err != nil {
 		t.Fatal(err)
 	}
