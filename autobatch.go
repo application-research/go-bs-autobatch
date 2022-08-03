@@ -8,6 +8,7 @@ import (
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
+	ipld "github.com/ipfs/go-ipld-format"
 	logging "github.com/ipfs/go-log"
 	"golang.org/x/xerrors"
 )
@@ -213,7 +214,7 @@ func (bs *Blockstore) Get(ctx context.Context, c cid.Cid) (blocks.Block, error) 
 		return blk, nil
 	default:
 		return nil, err
-	case xerrors.Is(err, blockstore.ErrNotFound):
+	case xerrors.Is(err, ipld.ErrNotFound{Cid: c}):
 		// This is a weird edgecase that really should be fixed some other way
 		return bs.writeLog.Get(ctx, c)
 	}
@@ -235,7 +236,7 @@ func (bs *Blockstore) GetSize(ctx context.Context, c cid.Cid) (int, error) {
 		return s, nil
 	default:
 		return 0, err
-	case xerrors.Is(err, blockstore.ErrNotFound):
+	case xerrors.Is(err, ipld.ErrNotFound{Cid: c}):
 		// This is a weird edgecase that really should be fixed some other way
 		return bs.writeLog.GetSize(ctx, c)
 	}
@@ -392,7 +393,7 @@ func (bs *Blockstore) View(ctx context.Context, c cid.Cid, f func([]byte) error)
 	if err == nil {
 		return nil
 	}
-	if !xerrors.Is(err, blockstore.ErrNotFound) {
+	if !xerrors.Is(err, ipld.ErrNotFound{Cid: c}) {
 		return err
 	}
 
